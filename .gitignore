@@ -1,0 +1,19 @@
+# Temporary folders and files
+_temp/
+*.tmp
+
+# Patch archives (Do not commit large binary game data)
+*.rar
+*.zip
+*.7z
+
+# Local state
+client/version.txt
+
+# Game directory
+client/KFC/
+
+# OS files
+Thumbs.db
+Desktop.ini
+.DS_Store
