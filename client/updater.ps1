@@ -379,24 +379,42 @@ if ($updateCount -gt 0) {
             }
         }
 
-        # Also ensure bootstrap.xml is updated/synced if present
-        if (-not $resolvedBootstrap) {
+        # Verify bootstrap.xml release_code matches the applied update
+        if (-not $resolvedBootstrap -or -not (Test-Path $resolvedBootstrap -PathType Leaf)) {
             if ($resolvedEa3) {
                 $candidate = Join-Path (Split-Path -Parent $resolvedEa3) "bootstrap.xml"
                 if (Test-Path $candidate -PathType Leaf) { $resolvedBootstrap = $candidate }
+            }
+            if (-not $resolvedBootstrap) {
+                $bootstrapCandidates = @(
+                    (Join-Path $targetDir "contents\prop\bootstrap.xml"),
+                    (Join-Path $targetDir "prop\bootstrap.xml"),
+                    (Join-Path $targetDir "bootstrap.xml")
+                )
+                foreach ($c in $bootstrapCandidates) {
+                    if (Test-Path $c -PathType Leaf) { $resolvedBootstrap = $c; break }
+                }
             }
             if (-not $resolvedBootstrap) {
                 $foundB = Get-ChildItem -Path $targetDir -Filter "bootstrap.xml" -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
                 if ($foundB) { $resolvedBootstrap = $foundB.FullName }
             }
         }
+
         if ($resolvedBootstrap -and (Test-Path $resolvedBootstrap -PathType Leaf)) {
             $bContent = Get-Content $resolvedBootstrap -Raw -Encoding UTF8
-            if ($bContent -match '(?s)(<release_code\b[^>]*>)\s*([A-Za-z0-9_-]+)\s*(</release_code>)') {
-                $newBContent = [regex]::Replace($bContent, '(?s)(<release_code\b[^>]*>)\s*([A-Za-z0-9_-]+)\s*(</release_code>)', "`${1}$dateCode`${3}")
-                [System.IO.File]::WriteAllText($resolvedBootstrap, $newBContent, [System.Text.Encoding]::UTF8)
-                Write-Host "[Post-Process] Synced bootstrap.xml (<release_code>$dateCode</release_code>)" -ForegroundColor Green
+            if ($bContent -match '(?s)<release_code\b[^>]*>\s*([A-Za-z0-9_-]+)\s*</release_code>') {
+                $actualReleaseCode = $matches[1].Trim()
+                if ($actualReleaseCode -eq $dateCode) {
+                    Write-Host "[Verify] bootstrap.xml release_code verified: $actualReleaseCode" -ForegroundColor Green
+                } else {
+                    Write-Host "[WARNING] bootstrap.xml release_code mismatch! (Expected: $dateCode, Found: $actualReleaseCode)" -ForegroundColor Red
+                }
+            } else {
+                Write-Host "[WARNING] Could not parse <release_code> in bootstrap.xml." -ForegroundColor Red
             }
+        } else {
+            Write-Host "[WARNING] bootstrap.xml not found after applying patch." -ForegroundColor Red
         }
     }
 
