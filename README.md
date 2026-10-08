@@ -81,4 +81,5 @@ ModulesDir=./KFC/contents/modules
 2. **Run Client Updater (`client/updater.bat`)**
    - Configure `client/config.ini` with the server URL.
    - Run `updater.bat`.
+   - `updater.bat` automatically checks and updates `updater.ps1` from the server before launching (skips silently if server is offline).
    - The updater will download sequentially, unpack cleanly into the game folder, update `ea3-config.xml`, handle `modules`, and close after 5 seconds.

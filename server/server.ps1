@@ -1,4 +1,4 @@
-﻿param (
+param (
     [string]$ConfigFile = "$PSScriptRoot\config.ini"
 )
 
@@ -169,6 +169,14 @@ try {
                     else {
                         $fileName = [System.IO.Path]::GetFileName($cleanPath)
                         $filePath = Join-Path $updatesDir $fileName
+
+                        # Also check client directory for updater scripts (e.g. updater.ps1, updater.bat)
+                        if (-not (Test-Path $filePath -PathType Leaf)) {
+                            $clientScriptPath = Join-Path (Split-Path -Parent $PSScriptRoot) "client\$fileName"
+                            if (Test-Path $clientScriptPath -PathType Leaf) {
+                                $filePath = $clientScriptPath
+                            }
+                        }
 
                         if (Test-Path $filePath -PathType Leaf) {
                             $fileInfo = [System.IO.FileInfo]::new($filePath)
