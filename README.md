@@ -65,6 +65,10 @@ TargetDir=./KFC
 ; Automatically updates <ext __type="str">DATE</ext> to the latest version date
 Ea3ConfigPath=./KFC/contents/prop/ea3-config.xml
 
+; Path to bootstrap.xml (leave empty to auto-detect in the same folder as ea3-config.xml)
+; Game version is automatically inspected from <release_code>DATE</release_code> in bootstrap.xml
+BootstrapPath=
+
 [Modules]
 ; Copy files inside modules folder to its parent folder (true / false)
 MoveModulesUp=true

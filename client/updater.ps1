@@ -17,6 +17,7 @@ $serverUrl = "http://localhost:8080"
 $gameId = ""
 $targetDir = "$PSScriptRoot"
 $ea3ConfigPath = ""
+$bootstrapPath = ""
 $moveModulesUp = $false
 $modulesDir = ""
 
@@ -52,6 +53,9 @@ if (Test-Path $ConfigFile) {
         elseif ($line -match "^Ea3ConfigPath\s*=\s*(.+)$") {
             $ea3ConfigPath = $matches[1].Trim()
         }
+        elseif ($line -match "^BootstrapPath\s*=\s*(.+)$") {
+            $bootstrapPath = $matches[1].Trim()
+        }
         elseif ($line -match "^MoveModulesUp\s*=\s*(.+)$") {
             $moveModulesUp = ($matches[1].Trim().ToLower() -eq "true")
         }
@@ -75,6 +79,9 @@ TargetDir=./KFC
 [Ea3Config]
 ; Path to ea3-config.xml (relative or absolute, leave empty to disable)
 Ea3ConfigPath=./KFC/contents/prop/ea3-config.xml
+
+; Path to bootstrap.xml (leave empty to auto-detect in the same folder as ea3-config.xml)
+BootstrapPath=
 
 [Modules]
 ; Copy files inside modules to parent folder (true / false)
@@ -122,17 +129,57 @@ if ($patchList.Count -eq 0) {
     Write-Host "`n[Notice] No matching patch (.rar) files found on server." -ForegroundColor Yellow
 }
 
-# 3. Check version.txt (auto-detect lowest version if missing)
+# 3. Detect current game version from bootstrap.xml (or fallback to version.txt)
 $currentVersion = ""
-if (Test-Path $VersionFile) {
+$resolvedBootstrap = ""
+
+# Locate bootstrap.xml (in the same folder as ea3-config.xml or specified path)
+if (-not [string]::IsNullOrWhiteSpace($bootstrapPath)) {
+    $candidate = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot $bootstrapPath))
+    if (Test-Path $candidate -PathType Leaf) { $resolvedBootstrap = $candidate }
+}
+if (-not $resolvedBootstrap -and -not [string]::IsNullOrWhiteSpace($ea3ConfigPath)) {
+    $ea3Dir = Split-Path -Parent ([System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot $ea3ConfigPath)))
+    $candidate = Join-Path $ea3Dir "bootstrap.xml"
+    if (Test-Path $candidate -PathType Leaf) { $resolvedBootstrap = $candidate }
+}
+if (-not $resolvedBootstrap) {
+    $candidates = @(
+        (Join-Path $targetDir "contents\prop\bootstrap.xml"),
+        (Join-Path $targetDir "prop\bootstrap.xml"),
+        (Join-Path $targetDir "bootstrap.xml")
+    )
+    foreach ($c in $candidates) {
+        if (Test-Path $c -PathType Leaf) {
+            $resolvedBootstrap = $c
+            break
+        }
+    }
+}
+
+# Inspect <release_code> from bootstrap.xml if found
+if ($resolvedBootstrap -and (Test-Path $resolvedBootstrap -PathType Leaf)) {
+    $bContent = Get-Content $resolvedBootstrap -Raw -Encoding UTF8
+    if ($bContent -match '(?s)<release_code\b[^>]*>\s*([A-Za-z0-9_-]+)\s*</release_code>') {
+        $releaseCode = $matches[1].Trim()
+        $currentVersion = if ($gameId) { "$gameId-$releaseCode" } else { $releaseCode }
+        Write-Host "`n[Notice] Game version detected from bootstrap.xml: $currentVersion" -ForegroundColor Cyan
+        $currentVersion | Set-Content -Path $VersionFile -Encoding UTF8
+    }
+}
+
+# Fallback to version.txt if not detected from bootstrap.xml
+if (-not $currentVersion -and (Test-Path $VersionFile)) {
     $currentVersion = (Get-Content $VersionFile -Raw -Encoding UTF8).Trim()
+    if ($gameId -and $currentVersion -match "^\d+$") {
+        $currentVersion = "$gameId-$currentVersion"
+    }
+    if ($currentVersion) {
+        Write-Host "`n[Notice] Game version loaded from version.txt: $currentVersion" -ForegroundColor Cyan
+    }
 }
 
-# Prepend GameID if version.txt only has numeric datecode
-if ($gameId -and $currentVersion -match "^\d+$") {
-    $currentVersion = "$gameId-$currentVersion"
-}
-
+# Fallback to server lowest patch if version is still unknown
 if ([string]::IsNullOrWhiteSpace($currentVersion) -and $patchList.Count -gt 0) {
     $validPatches = foreach ($f in $patchList) {
         if ($f -match "^([A-Za-z0-9_]+)-(\d+)\s+to\s+(\d+)\.rar$") {
@@ -150,7 +197,7 @@ if ([string]::IsNullOrWhiteSpace($currentVersion) -and $patchList.Count -gt 0) {
         $sortedPatches = $validPatches | Sort-Object FromVerNum
         $lowestPatch = $sortedPatches[0]
         $currentVersion = $lowestPatch.FromFullVer
-        Write-Host "`n[Notice] version.txt not found." -ForegroundColor Cyan
+        Write-Host "`n[Notice] No existing version found in bootstrap.xml or version.txt." -ForegroundColor Cyan
         Write-Host "  -> Starting sequential update for [$($lowestPatch.GameCode)] from base version: $currentVersion" -ForegroundColor Green
         $currentVersion | Set-Content -Path $VersionFile -Encoding UTF8
     } else {
