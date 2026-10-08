@@ -1,3 +1,4 @@
+# ScriptVersion: 1.0.0
 param (
     [string]$ConfigFile = "$PSScriptRoot\config.ini"
 )
