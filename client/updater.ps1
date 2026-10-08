@@ -251,55 +251,126 @@ function Unpack-Archive ($archivePath, $destPath, $workTempDir) {
     return ($roboExit -lt 8)
 }
 
-# 4. Sequential update loop
+# 4. Plan and validate sequential updates
+$plannedPatches = @()
+$canUpdate = $true
+$gameCode = if ($gameId) { $gameId } else { "" }
+if (-not $gameCode -and $currentVersion -match "^([A-Za-z0-9_]+)-") {
+    $gameCode = $matches[1]
+}
+
+if (-not [string]::IsNullOrWhiteSpace($currentVersion) -and $patchList.Count -gt 0) {
+    # Parse available patches to find the highest server version
+    $availablePatches = @()
+    foreach ($f in $patchList) {
+        if ($f -match "^([A-Za-z0-9_]+)-(\d+)\s+to\s+([A-Za-z0-9_-]+)\.rar$") {
+            $pGame = $matches[1]
+            $pFromNum = [long]$matches[2]
+            $pToRaw = $matches[3]
+            $pToNum = 0
+            if ($pToRaw -match "(\d+)$") { $pToNum = [long]$matches[1] }
+            $availablePatches += [PSCustomObject]@{
+                FileName   = $f
+                GameCode   = $pGame
+                FromVerNum = $pFromNum
+                ToVerNum   = $pToNum
+            }
+        }
+    }
+
+    $maxServerVerNum = 0
+    if ($availablePatches.Count -gt 0) {
+        $maxServerVerNum = ($availablePatches | Measure-Object -Property ToVerNum -Maximum).Maximum
+    }
+
+    $curVerNum = 0
+    if ($currentVersion -match "-(\d+)$") {
+        $curVerNum = [long]$matches[1]
+    } elseif ($currentVersion -match "^\d+$") {
+        $curVerNum = [long]$currentVersion
+    }
+
+    # Trace patch chain from current version
+    $tempVer = $currentVersion
+    while ($true) {
+        $escapedVer = [regex]::Escape($tempVer)
+        $matchedFile = $patchList | Where-Object { $_ -match "^$escapedVer\s+to\s+([A-Za-z0-9_-]+)\.rar$" } | Select-Object -First 1
+        if (-not $matchedFile) { break }
+
+        if ($matchedFile -match "^$escapedVer\s+to\s+([A-Za-z0-9_-]+)\.rar$") {
+            $nextVerSuffix = $matches[1]
+            $newFullVersion = if ($nextVerSuffix -match "^[A-Za-z0-9_]+-") { $nextVerSuffix }
+                              elseif ($gameCode) { "$gameCode-$nextVerSuffix" }
+                              else { $nextVerSuffix }
+
+            $plannedPatches += [PSCustomObject]@{
+                FileName    = $matchedFile
+                FromVersion = $tempVer
+                ToVersion   = $newFullVersion
+            }
+            $tempVer = $newFullVersion
+        }
+    }
+
+    $plannedEndNum = 0
+    if ($tempVer -match "-(\d+)$") {
+        $plannedEndNum = [long]$matches[1]
+    } elseif ($tempVer -match "(\d+)$") {
+        $plannedEndNum = [long]$matches[1]
+    }
+
+    # Validation: Check if patch from current version or intermediate patch is missing
+    if ($curVerNum -gt 0 -and $maxServerVerNum -gt 0 -and $curVerNum -lt $maxServerVerNum) {
+        if ($plannedPatches.Count -eq 0) {
+            $canUpdate = $false
+            Write-Host "`n[WARNING] Update cannot proceed: Missing required patch file!" -ForegroundColor Red
+            Write-Host "  Current game version : $currentVersion" -ForegroundColor Yellow
+            Write-Host "  Latest server version: $maxServerVerNum" -ForegroundColor Yellow
+            Write-Host "  Missing patch file   : $currentVersion to <next_version>.rar" -ForegroundColor Red
+            Write-Host "The patch file to update from current version to next version is missing on server." -ForegroundColor Red
+            Write-Host "Update aborted.`n" -ForegroundColor Red
+        }
+        elseif ($plannedEndNum -lt $maxServerVerNum) {
+            $canUpdate = $false
+            Write-Host "`n[WARNING] Update cannot proceed: Incomplete update chain on server!" -ForegroundColor Red
+            Write-Host "  Current game version : $currentVersion" -ForegroundColor Yellow
+            Write-Host "  Chain stopped at     : $tempVer" -ForegroundColor Yellow
+            Write-Host "  Latest server version: $maxServerVerNum" -ForegroundColor Yellow
+            Write-Host "  Missing patch file   : $tempVer to <next_version>.rar" -ForegroundColor Red
+            Write-Host "An intermediate patch file in the update chain is missing on server." -ForegroundColor Red
+            Write-Host "Update aborted to prevent partial update.`n" -ForegroundColor Red
+        }
+    }
+}
+
+# 5. Execute sequential update loop
 $updateCount = 0
 
-try {
-    if (-not [string]::IsNullOrWhiteSpace($currentVersion)) {
-        while ($true) {
-            $gameCode = if ($gameId) { $gameId } else { "" }
-            if (-not $gameCode -and $currentVersion -match "^([A-Za-z0-9_]+)-") {
-                $gameCode = $matches[1]
-            }
+if ($canUpdate -and $plannedPatches.Count -gt 0) {
+    Write-Host "`nFound $($plannedPatches.Count) sequential patch(es) to apply:" -ForegroundColor Cyan
+    foreach ($p in $plannedPatches) {
+        Write-Host "  $($p.FromVersion) -> $($p.ToVersion) ($($p.FileName))" -ForegroundColor Gray
+    }
 
-            $escapedCurVer = [regex]::Escape($currentVersion)
-            $matchedFile = $patchList | Where-Object { $_ -match "^$escapedCurVer\s+to\s+([A-Za-z0-9_-]+)\.rar$" } | Select-Object -First 1
-
-            if (-not $matchedFile) {
-                break
-            }
-
-            if ($matchedFile -match "^$escapedCurVer\s+to\s+([A-Za-z0-9_-]+)\.rar$") {
-                $nextVerSuffix = $matches[1]
-            } else {
-                break
-            }
-
-            if ($nextVerSuffix -match "^[A-Za-z0-9_]+-") {
-                $newFullVersion = $nextVerSuffix
-            } elseif ($gameCode) {
-                $newFullVersion = "$gameCode-$nextVerSuffix"
-            } else {
-                $newFullVersion = $nextVerSuffix
-            }
-
+    try {
+        foreach ($p in $plannedPatches) {
             $updateCount++
             Write-Host "`n----------------------------------------------------------" -ForegroundColor DarkGray
-            Write-Host "[Step $updateCount] Updating: $currentVersion -> $newFullVersion" -ForegroundColor Yellow
-            Write-Host "Patch file : $matchedFile" -ForegroundColor White
+            Write-Host "[Step $updateCount / $($plannedPatches.Count)] Updating: $($p.FromVersion) -> $($p.ToVersion)" -ForegroundColor Yellow
+            Write-Host "Patch file : $($p.FileName)" -ForegroundColor White
 
             $tempFile = Join-Path $localTempDir "patch_$updateCount.rar"
             if (Test-Path $tempFile) { Remove-Item $tempFile -Force }
 
-            $encodedFileName = [System.Uri]::EscapeDataString($matchedFile)
+            $encodedFileName = [System.Uri]::EscapeDataString($p.FileName)
             $downloadUrl = "$serverUrl/$encodedFileName"
 
             Write-Host "Downloading..." -ForegroundColor Gray
             & curl.exe -fSL --progress-bar -o "$tempFile" "$downloadUrl"
 
             if ($LASTEXITCODE -ne 0 -or -not (Test-Path $tempFile)) {
-                Write-Host "[ERROR] Failed to download patch: $matchedFile" -ForegroundColor Red
-                exit 1
+                Write-Host "[ERROR] Failed to download patch: $($p.FileName)" -ForegroundColor Red
+                break
             }
 
             Write-Host "Applying patch..." -ForegroundColor Yellow
@@ -309,18 +380,17 @@ try {
 
             if (-not $unpacked) {
                 Write-Host "[ERROR] Failed to extract and apply patch." -ForegroundColor Red
-                exit 1
+                break
             }
 
-            $currentVersion = $newFullVersion
-
+            $currentVersion = $p.ToVersion
             Write-Host "[OK] Applied v$currentVersion" -ForegroundColor Green
         }
-    }
-} finally {
-    # Clean up local temporary folder
-    if (Test-Path $localTempDir) {
-        Remove-Item -Recurse -Force $localTempDir -ErrorAction SilentlyContinue
+    } finally {
+        # Clean up local temporary folder
+        if (Test-Path $localTempDir) {
+            Remove-Item -Recurse -Force $localTempDir -ErrorAction SilentlyContinue
+        }
     }
 }
 
@@ -328,7 +398,7 @@ Write-Host "`n==========================================================" -Foreg
 if ($updateCount -gt 0) {
     Write-Host "Successfully applied $($updateCount) patch(es)!" -ForegroundColor Green
     Write-Host "Latest version: $currentVersion" -ForegroundColor White
-} else {
+} elseif ($canUpdate) {
     Write-Host "Already up to date. No new patches available." -ForegroundColor Green
     if ($currentVersion) {
         Write-Host "Current version: $currentVersion" -ForegroundColor White
@@ -336,7 +406,7 @@ if ($updateCount -gt 0) {
 }
 Write-Host "==========================================================" -ForegroundColor Cyan
 
-# 5. Post-processing (Only runs when patches were actually applied)
+# 6. Post-processing (Only runs when patches were actually applied)
 if ($updateCount -gt 0) {
     $dateCode = ""
     if ($currentVersion -match "-(\d+)$") {
@@ -345,7 +415,7 @@ if ($updateCount -gt 0) {
         $dateCode = $matches[1]
     }
 
-    # 5-1. Update datecode in ea3-config.xml and sync bootstrap.xml (auto-detect in target directory)
+    # 6-1. Update datecode in ea3-config.xml and sync bootstrap.xml (auto-detect in target directory)
     if (-not [string]::IsNullOrWhiteSpace($dateCode)) {
         $resolvedEa3 = ""
         if ($resolvedBootstrap) {
@@ -418,7 +488,7 @@ if ($updateCount -gt 0) {
         }
     }
 
-    # 5-2. Copy files inside modules to parent directory
+    # 6-2. Copy files inside modules to parent directory
     if ($moveModulesUp) {
         $modulesFullPath = ""
         if (-not [string]::IsNullOrWhiteSpace($modulesDir)) {
@@ -444,7 +514,7 @@ if ($updateCount -gt 0) {
     }
 }
 
-# 6. Countdown and auto-exit
+# 7. Countdown and auto-exit
 Write-Host "`nWindow will close in 5 seconds... (Press any key to exit now)" -ForegroundColor Gray
 for ($i = 5; $i -gt 0; $i--) {
     Write-Host -NoNewline "`rClosing in $i second(s)... " -ForegroundColor Yellow
