@@ -98,51 +98,6 @@ if ($bindIp -eq "0.0.0.0") {
 }
 Write-Host "==========================================================" -ForegroundColor Cyan
 
-# GitHub sync for client updater (updater.ps1)
-function Sync-ClientUpdaterFromGitHub {
-    $githubUrl = "https://raw.githubusercontent.com/selees/konmaiupdater/main/client/updater.ps1"
-    
-    # Target file: prefer repo client folder if exists, otherwise server folder
-    $repoClientDir = Join-Path (Split-Path -Parent $PSScriptRoot) "client"
-    $targetFile = if (Test-Path $repoClientDir -PathType Container) {
-        Join-Path $repoClientDir "updater.ps1"
-    } else {
-        Join-Path $PSScriptRoot "updater.ps1"
-    }
-
-    $localVersion = [version]"0.0.0"
-    if (Test-Path $targetFile -PathType Leaf) {
-        $localContent = Get-Content $targetFile -Raw -Encoding UTF8
-        if ($localContent -match '#\s*ScriptVersion:\s*([0-9\.]+)') {
-            try { $localVersion = [version]$matches[1] } catch {}
-        }
-    }
-
-    Write-Host "[GitHub Sync] Checking for latest client updater (Local: v$localVersion)..." -ForegroundColor Gray
-    try {
-        $remoteContent = & curl.exe -fsSL --connect-timeout 3 --max-time 6 "$githubUrl" 2>$null
-        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($remoteContent)) {
-            $remoteVersion = [version]"0.0.0"
-            if ($remoteContent -match '#\s*ScriptVersion:\s*([0-9\.]+)') {
-                try { $remoteVersion = [version]$matches[1] } catch {}
-            }
-
-            if ($remoteVersion -gt $localVersion -or (-not (Test-Path $targetFile -PathType Leaf))) {
-                [System.IO.File]::WriteAllText($targetFile, $remoteContent, [System.Text.Encoding]::UTF8)
-                Write-Host "[GitHub Sync] Updated client updater to v$remoteVersion from GitHub!" -ForegroundColor Green
-            } else {
-                Write-Host "[GitHub Sync] Client updater is already up to date (v$localVersion)." -ForegroundColor Gray
-            }
-        } else {
-            Write-Host "[GitHub Sync] Could not reach GitHub (offline/timeout). Using local files." -ForegroundColor DarkGray
-        }
-    } catch {
-        Write-Host "[GitHub Sync] Offline or connection error. Using local files." -ForegroundColor DarkGray
-    }
-}
-
-Sync-ClientUpdaterFromGitHub
-
 # Start TcpListener
 $listener = [System.Net.Sockets.TcpListener]::new($ipToBind, $port)
 try {
@@ -215,23 +170,26 @@ try {
                         $fileName = [System.IO.Path]::GetFileName($cleanPath)
                         $filePath = ""
 
-                        # Search candidate locations: updates folder -> client folder -> server folder
-                        $candidatePaths = @(
-                            (Join-Path $updatesDir $fileName),
-                            (Join-Path (Split-Path -Parent $PSScriptRoot) "client\$fileName"),
-                            (Join-Path $PSScriptRoot $fileName)
-                        )
-                        foreach ($c in $candidatePaths) {
-                            if (Test-Path $c -PathType Leaf) {
-                                $filePath = $c
-                                break
+                        if ($cleanPath -eq "client_updater.ps1" -or $cleanPath -eq "updater.ps1") {
+                            $scriptCandidates = @(
+                                (Join-Path $PSScriptRoot "client_updater.ps1"),
+                                (Join-Path $updatesDir "client_updater.ps1"),
+                                (Join-Path $updatesDir "updater.ps1"),
+                                (Join-Path (Split-Path -Parent $PSScriptRoot) "client\updater.ps1"),
+                                (Join-Path $PSScriptRoot "updater.ps1")
+                            )
+                            foreach ($c in $scriptCandidates) {
+                                if (Test-Path $c -PathType Leaf) {
+                                    $filePath = $c
+                                    break
+                                }
                             }
-                        }
-
-                        # If updater script was requested but not found locally, try downloading from GitHub on-demand
-                        if (-not $filePath -and ($fileName -eq "updater.ps1" -or $fileName -eq "updater.bat")) {
-                            Sync-ClientUpdaterFromGitHub
-                            foreach ($c in $candidatePaths) {
+                        } else {
+                            $fileCandidates = @(
+                                (Join-Path $updatesDir $fileName),
+                                (Join-Path $PSScriptRoot $fileName)
+                            )
+                            foreach ($c in $fileCandidates) {
                                 if (Test-Path $c -PathType Leaf) {
                                     $filePath = $c
                                     break
@@ -239,7 +197,7 @@ try {
                             }
                         }
 
-                        if (Test-Path $filePath -PathType Leaf) {
+                        if ($filePath -and (Test-Path $filePath -PathType Leaf)) {
                             $fileInfo = [System.IO.FileInfo]::new($filePath)
                             $fileSize = $fileInfo.Length
                             $fileSizeMB = [Math]::Round($fileSize / 1MB, 2)

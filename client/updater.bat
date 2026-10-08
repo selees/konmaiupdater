@@ -14,8 +14,11 @@ if not defined SERVER_URL set "SERVER_URL=http://localhost:8080"
 for /f "tokens=* delims= " %%A in ("%SERVER_URL%") do set "SERVER_URL=%%A"
 if "%SERVER_URL:~-1%"=="/" set "SERVER_URL=%SERVER_URL:~0,-1%"
 
-REM 2. Check for latest updater.ps1 from server (silently skips if server is offline or timeout after 2s)
-curl.exe -fsSL --connect-timeout 2 --max-time 4 -o "%~dp0updater.ps1.tmp" "%SERVER_URL%/updater.ps1" 2>nul
+REM 2. Check for latest client_updater.ps1 from server (silently skips if server is offline or timeout after 2s)
+curl.exe -fsSL --connect-timeout 2 --max-time 4 -o "%~dp0updater.ps1.tmp" "%SERVER_URL%/client_updater.ps1" 2>nul
+if errorlevel 1 (
+    curl.exe -fsSL --connect-timeout 2 --max-time 4 -o "%~dp0updater.ps1.tmp" "%SERVER_URL%/updater.ps1" 2>nul
+)
 if %ERRORLEVEL% equ 0 if exist "%~dp0updater.ps1.tmp" (
     fc /b "%~dp0updater.ps1" "%~dp0updater.ps1.tmp" >nul 2>nul
     if errorlevel 1 (

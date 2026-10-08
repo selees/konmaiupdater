@@ -10,6 +10,7 @@ Place your patch archive files (e.g. `KFC-2026080500 to 2026082500.rar`) in the 
 ```text
 konmaiupdater/
 ├── server/                    # [Server PC] Patch Distribution
+│   ├── client_updater.ps1    # Client updater script distributed to cabinets
 │   ├── config.ini            # Server settings (Bind IP, Port, Client IP filter, Updates folder)
 │   ├── updates/              # Drop your .rar patch files here
 │   ├── server.ps1            # Lightweight native HTTP server
