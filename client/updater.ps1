@@ -1,6 +1,5 @@
-﻿param (
-    [string]$ConfigFile = "$PSScriptRoot\config.ini",
-    [string]$VersionFile = "$PSScriptRoot\version.txt"
+param (
+    [string]$ConfigFile = "$PSScriptRoot\config.ini"
 )
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -16,8 +15,6 @@ Write-Host "==========================================================" -Foregro
 $serverUrl = "http://localhost:8080"
 $gameId = ""
 $targetDir = "$PSScriptRoot"
-$ea3ConfigPath = ""
-$bootstrapPath = ""
 $moveModulesUp = $false
 $modulesDir = ""
 
@@ -50,12 +47,6 @@ if (Test-Path $ConfigFile) {
                 $targetDir = $fullPath
             }
         }
-        elseif ($line -match "^Ea3ConfigPath\s*=\s*(.+)$") {
-            $ea3ConfigPath = $matches[1].Trim()
-        }
-        elseif ($line -match "^BootstrapPath\s*=\s*(.+)$") {
-            $bootstrapPath = $matches[1].Trim()
-        }
         elseif ($line -match "^MoveModulesUp\s*=\s*(.+)$") {
             $moveModulesUp = ($matches[1].Trim().ToLower() -eq "true")
         }
@@ -76,17 +67,10 @@ GameID=KFC
 ; Target game directory (. for current directory, or ./KFC for subfolder)
 TargetDir=./KFC
 
-[Ea3Config]
-; Path to ea3-config.xml (relative or absolute, leave empty to disable)
-Ea3ConfigPath=./KFC/contents/prop/ea3-config.xml
-
-; Path to bootstrap.xml (leave empty to auto-detect in the same folder as ea3-config.xml)
-BootstrapPath=
-
 [Modules]
-; Copy files inside modules to parent folder (true / false)
+; Copy files inside modules folder to its parent folder (true / false)
 MoveModulesUp=true
-; Modules directory path (leave empty to auto-detect inside TargetDir)
+; Path to modules directory (leave empty to auto-detect inside TargetDir)
 ModulesDir=./KFC/contents/modules
 "@ | Set-Content -Path $ConfigFile -Encoding UTF8
     Write-Host "[Notice] Created default config.ini" -ForegroundColor Gray
@@ -129,31 +113,25 @@ if ($patchList.Count -eq 0) {
     Write-Host "`n[Notice] No matching patch (.rar) files found on server." -ForegroundColor Yellow
 }
 
-# 3. Detect current game version from bootstrap.xml (or fallback to version.txt)
+# 3. Detect current game version from bootstrap.xml (auto-detect in target directory)
 $currentVersion = ""
 $resolvedBootstrap = ""
 
-# Locate bootstrap.xml (in the same folder as ea3-config.xml or specified path)
-if (-not [string]::IsNullOrWhiteSpace($bootstrapPath)) {
-    $candidate = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot $bootstrapPath))
-    if (Test-Path $candidate -PathType Leaf) { $resolvedBootstrap = $candidate }
-}
-if (-not $resolvedBootstrap -and -not [string]::IsNullOrWhiteSpace($ea3ConfigPath)) {
-    $ea3Dir = Split-Path -Parent ([System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot $ea3ConfigPath)))
-    $candidate = Join-Path $ea3Dir "bootstrap.xml"
-    if (Test-Path $candidate -PathType Leaf) { $resolvedBootstrap = $candidate }
+$bootstrapCandidates = @(
+    (Join-Path $targetDir "contents\prop\bootstrap.xml"),
+    (Join-Path $targetDir "prop\bootstrap.xml"),
+    (Join-Path $targetDir "bootstrap.xml")
+)
+foreach ($c in $bootstrapCandidates) {
+    if (Test-Path $c -PathType Leaf) {
+        $resolvedBootstrap = $c
+        break
+    }
 }
 if (-not $resolvedBootstrap) {
-    $candidates = @(
-        (Join-Path $targetDir "contents\prop\bootstrap.xml"),
-        (Join-Path $targetDir "prop\bootstrap.xml"),
-        (Join-Path $targetDir "bootstrap.xml")
-    )
-    foreach ($c in $candidates) {
-        if (Test-Path $c -PathType Leaf) {
-            $resolvedBootstrap = $c
-            break
-        }
+    $found = Get-ChildItem -Path $targetDir -Filter "bootstrap.xml" -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($found) {
+        $resolvedBootstrap = $found.FullName
     }
 }
 
@@ -164,22 +142,10 @@ if ($resolvedBootstrap -and (Test-Path $resolvedBootstrap -PathType Leaf)) {
         $releaseCode = $matches[1].Trim()
         $currentVersion = if ($gameId) { "$gameId-$releaseCode" } else { $releaseCode }
         Write-Host "`n[Notice] Game version detected from bootstrap.xml: $currentVersion" -ForegroundColor Cyan
-        $currentVersion | Set-Content -Path $VersionFile -Encoding UTF8
     }
 }
 
-# Fallback to version.txt if not detected from bootstrap.xml
-if (-not $currentVersion -and (Test-Path $VersionFile)) {
-    $currentVersion = (Get-Content $VersionFile -Raw -Encoding UTF8).Trim()
-    if ($gameId -and $currentVersion -match "^\d+$") {
-        $currentVersion = "$gameId-$currentVersion"
-    }
-    if ($currentVersion) {
-        Write-Host "`n[Notice] Game version loaded from version.txt: $currentVersion" -ForegroundColor Cyan
-    }
-}
-
-# Fallback to server lowest patch if version is still unknown
+# Fallback to server lowest patch if bootstrap.xml is missing or empty
 if ([string]::IsNullOrWhiteSpace($currentVersion) -and $patchList.Count -gt 0) {
     $validPatches = foreach ($f in $patchList) {
         if ($f -match "^([A-Za-z0-9_]+)-(\d+)\s+to\s+(\d+)\.rar$") {
@@ -197,9 +163,8 @@ if ([string]::IsNullOrWhiteSpace($currentVersion) -and $patchList.Count -gt 0) {
         $sortedPatches = $validPatches | Sort-Object FromVerNum
         $lowestPatch = $sortedPatches[0]
         $currentVersion = $lowestPatch.FromFullVer
-        Write-Host "`n[Notice] No existing version found in bootstrap.xml or version.txt." -ForegroundColor Cyan
+        Write-Host "`n[Notice] bootstrap.xml not found." -ForegroundColor Cyan
         Write-Host "  -> Starting sequential update for [$($lowestPatch.GameCode)] from base version: $currentVersion" -ForegroundColor Green
-        $currentVersion | Set-Content -Path $VersionFile -Encoding UTF8
     } else {
         Write-Host "[ERROR] No valid patch naming format found for Game ID [$gameId]." -ForegroundColor Red
         exit 1
@@ -347,7 +312,6 @@ try {
                 exit 1
             }
 
-            $newFullVersion | Set-Content -Path $VersionFile -Encoding UTF8
             $currentVersion = $newFullVersion
 
             Write-Host "[OK] Applied v$currentVersion" -ForegroundColor Green
@@ -381,15 +345,57 @@ if ($updateCount -gt 0) {
         $dateCode = $matches[1]
     }
 
-    # 5-1. Update datecode in ea3-config.xml
-    if (-not [string]::IsNullOrWhiteSpace($ea3ConfigPath) -and -not [string]::IsNullOrWhiteSpace($dateCode)) {
-        $ea3FullPath = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot $ea3ConfigPath))
-        if (Test-Path $ea3FullPath -PathType Leaf) {
-            $xmlContent = Get-Content $ea3FullPath -Raw -Encoding UTF8
+    # 5-1. Update datecode in ea3-config.xml and sync bootstrap.xml (auto-detect in target directory)
+    if (-not [string]::IsNullOrWhiteSpace($dateCode)) {
+        $resolvedEa3 = ""
+        if ($resolvedBootstrap) {
+            $candidate = Join-Path (Split-Path -Parent $resolvedBootstrap) "ea3-config.xml"
+            if (Test-Path $candidate -PathType Leaf) { $resolvedEa3 = $candidate }
+        }
+        if (-not $resolvedEa3) {
+            $ea3Candidates = @(
+                (Join-Path $targetDir "contents\prop\ea3-config.xml"),
+                (Join-Path $targetDir "prop\ea3-config.xml"),
+                (Join-Path $targetDir "ea3-config.xml")
+            )
+            foreach ($c in $ea3Candidates) {
+                if (Test-Path $c -PathType Leaf) {
+                    $resolvedEa3 = $c
+                    break
+                }
+            }
+        }
+        if (-not $resolvedEa3) {
+            $foundEa3 = Get-ChildItem -Path $targetDir -Filter "ea3-config.xml" -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($foundEa3) { $resolvedEa3 = $foundEa3.FullName }
+        }
+
+        if ($resolvedEa3 -and (Test-Path $resolvedEa3 -PathType Leaf)) {
+            $xmlContent = Get-Content $resolvedEa3 -Raw -Encoding UTF8
             if ($xmlContent -match '<ext\s+__type="str">[^<]*</ext>') {
                 $newXml = [regex]::Replace($xmlContent, '<ext\s+__type="str">[^<]*</ext>', "<ext __type=`"str`">$dateCode</ext>")
-                [System.IO.File]::WriteAllText($ea3FullPath, $newXml, [System.Text.Encoding]::UTF8)
+                [System.IO.File]::WriteAllText($resolvedEa3, $newXml, [System.Text.Encoding]::UTF8)
                 Write-Host "`n[Post-Process] Updated ea3-config.xml (<ext __type=`"str`">$dateCode</ext>)" -ForegroundColor Green
+            }
+        }
+
+        # Also ensure bootstrap.xml is updated/synced if present
+        if (-not $resolvedBootstrap) {
+            if ($resolvedEa3) {
+                $candidate = Join-Path (Split-Path -Parent $resolvedEa3) "bootstrap.xml"
+                if (Test-Path $candidate -PathType Leaf) { $resolvedBootstrap = $candidate }
+            }
+            if (-not $resolvedBootstrap) {
+                $foundB = Get-ChildItem -Path $targetDir -Filter "bootstrap.xml" -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($foundB) { $resolvedBootstrap = $foundB.FullName }
+            }
+        }
+        if ($resolvedBootstrap -and (Test-Path $resolvedBootstrap -PathType Leaf)) {
+            $bContent = Get-Content $resolvedBootstrap -Raw -Encoding UTF8
+            if ($bContent -match '(?s)(<release_code\b[^>]*>)\s*([A-Za-z0-9_-]+)\s*(</release_code>)') {
+                $newBContent = [regex]::Replace($bContent, '(?s)(<release_code\b[^>]*>)\s*([A-Za-z0-9_-]+)\s*(</release_code>)', "`${1}$dateCode`${3}")
+                [System.IO.File]::WriteAllText($resolvedBootstrap, $newBContent, [System.Text.Encoding]::UTF8)
+                Write-Host "[Post-Process] Synced bootstrap.xml (<release_code>$dateCode</release_code>)" -ForegroundColor Green
             }
         }
     }

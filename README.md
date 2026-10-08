@@ -1,7 +1,7 @@
 # KONMAI Patch Web Server & Auto Updater
 
 An automated patch server and client updater designed for arcade machines (BEMANI / SOUND VOLTEX, etc.).
-Place your patch archive files (e.g. `KFC-2026080500 to 2026082500.rar`) in the server folder, and the client will automatically detect its current version from `version.txt`, download the sequential updates, extract them directly to the game folder, update `ea3-config.xml`, and move `modules` if needed.
+Place your patch archive files (e.g. `KFC-2026080500 to 2026082500.rar`) in the server folder, and the client will automatically detect its current version from `bootstrap.xml`, download the sequential updates, extract them directly to the game folder, update `ea3-config.xml`, and move `modules` if needed.
 
 ---
 
@@ -16,8 +16,7 @@ konmaiupdater/
 │   └── start_server.bat      # Double-click to start server
 │
 └── client/                    # [Client / Arcade Cabinet] Game Updater
-    ├── config.ini            # Server URL, Game dir, XML path, Modules options
-    ├── version.txt           # Current game version (auto-starts from lowest if missing)
+    ├── config.ini            # Server URL, Game dir, Modules options
     ├── updater.ps1           # Auto download, unpack, post-process & sequential update engine
     └── updater.bat           # Double-click to update (auto-closes in 5s when finished)
 ```
@@ -60,21 +59,15 @@ GameID=KFC
 ; Target game directory (. for current directory, or ./KFC for subfolder)
 TargetDir=./KFC
 
-[Ea3Config]
-; Path to ea3-config.xml (relative or absolute, leave empty to disable)
-; Automatically updates <ext __type="str">DATE</ext> to the latest version date
-Ea3ConfigPath=./KFC/contents/prop/ea3-config.xml
-
-; Path to bootstrap.xml (leave empty to auto-detect in the same folder as ea3-config.xml)
-; Game version is automatically inspected from <release_code>DATE</release_code> in bootstrap.xml
-BootstrapPath=
-
 [Modules]
 ; Copy files inside modules folder to its parent folder (true / false)
 MoveModulesUp=true
 ; Path to modules directory (leave empty to auto-detect inside TargetDir)
 ModulesDir=./KFC/contents/modules
 ```
+
+> [!NOTE]
+> `bootstrap.xml` (game version detection) and `ea3-config.xml` (datecode update) are automatically discovered inside `TargetDir` (e.g. in `contents/prop/` or `prop/`).
 
 ---
 

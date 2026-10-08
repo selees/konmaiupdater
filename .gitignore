@@ -7,9 +7,6 @@ _temp/
 *.zip
 *.7z
 
-# Local state
-client/version.txt
-
 # Game directory
 client/KFC/
 
