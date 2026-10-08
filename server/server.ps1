@@ -168,13 +168,18 @@ try {
                     # 2. File download request
                     else {
                         $fileName = [System.IO.Path]::GetFileName($cleanPath)
-                        $filePath = Join-Path $updatesDir $fileName
+                        $filePath = ""
 
-                        # Also check client directory for updater scripts (e.g. updater.ps1, updater.bat)
-                        if (-not (Test-Path $filePath -PathType Leaf)) {
-                            $clientScriptPath = Join-Path (Split-Path -Parent $PSScriptRoot) "client\$fileName"
-                            if (Test-Path $clientScriptPath -PathType Leaf) {
-                                $filePath = $clientScriptPath
+                        # Search candidate locations: updates folder -> client folder -> server folder
+                        $candidatePaths = @(
+                            (Join-Path $updatesDir $fileName),
+                            (Join-Path (Split-Path -Parent $PSScriptRoot) "client\$fileName"),
+                            (Join-Path $PSScriptRoot $fileName)
+                        )
+                        foreach ($c in $candidatePaths) {
+                            if (Test-Path $c -PathType Leaf) {
+                                $filePath = $c
+                                break
                             }
                         }
 
