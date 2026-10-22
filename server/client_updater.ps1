@@ -1,4 +1,4 @@
-﻿# ScriptVersion: 1.2.1
+﻿# ScriptVersion: 1.2.2
 param (
     [string]$ConfigFile = "$PSScriptRoot\config.ini"
 )
@@ -28,7 +28,7 @@ GameID=KFC
 TargetDir=./KFC
 
 [Modules]
-; Copy files inside modules folder to its parent folder (true / false)
+; Move files inside modules folder to its parent folder (true / false)
 MoveModulesUp=true
 ; Path to modules directory (leave empty to auto-detect inside TargetDir)
 ModulesDir=./KFC/contents/modules
@@ -98,7 +98,7 @@ EnabledPatches=
             $appendedLines.Add("[Modules]")
         }
         if (-not $existingKeys.ContainsKey("movemodulesup")) {
-            $appendedLines.Add("; Copy files inside modules folder to its parent folder (true / false)")
+            $appendedLines.Add("; Move files inside modules folder to its parent folder (true / false)")
             $appendedLines.Add("MoveModulesUp=true")
         }
         if (-not $existingKeys.ContainsKey("modulesdir")) {
@@ -1229,28 +1229,51 @@ if ($updateCount -gt 0) {
         }
     }
 
-    # 6-2. Copy files inside modules to parent directory
-    if ($moveModulesUp) {
-        $modulesFullPath = ""
-        if (-not [string]::IsNullOrWhiteSpace($modulesDir)) {
-            $modulesFullPath = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot $modulesDir))
-        } else {
-            $candidates = @(
-                (Join-Path $targetDir "contents\modules"),
-                (Join-Path $targetDir "modules")
-            )
-            foreach ($c in $candidates) {
-                if (Test-Path $c -PathType Container) {
-                    $modulesFullPath = $c
-                    break
-                }
+}
+
+# 6-2. Move files inside modules to parent directory (prevents duplicate DLL patching)
+if ($moveModulesUp) {
+    $modulesFullPath = ""
+    if (-not [string]::IsNullOrWhiteSpace($modulesDir)) {
+        $modulesFullPath = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot $modulesDir))
+    } else {
+        $candidates = @(
+            (Join-Path $targetDir "contents\modules"),
+            (Join-Path $targetDir "modules")
+        )
+        foreach ($c in $candidates) {
+            if (Test-Path $c -PathType Container) {
+                $modulesFullPath = $c
+                break
             }
         }
+    }
 
-        if ($modulesFullPath -and (Test-Path $modulesFullPath -PathType Container)) {
-            $parentDir = Split-Path -Parent $modulesFullPath
-            robocopy "$modulesFullPath" "$parentDir" /E /NFL /NDL /NJH /NJS | Out-Null
-            Write-Host "[Post-Process] Copied modules to parent directory" -ForegroundColor Green
+    if ($modulesFullPath -and (Test-Path $modulesFullPath -PathType Container)) {
+        $parentDir = Split-Path -Parent $modulesFullPath
+        if ($updateCount -gt 0) {
+            robocopy "$modulesFullPath" "$parentDir" /E /MOVE /NFL /NDL /NJH /NJS | Out-Null
+            Write-Host "[Post-Process] Moved modules to parent directory" -ForegroundColor Green
+        } else {
+            # If no update ran but leftover duplicate files exist in modules from previous copy mode, clean/move them
+            $leftoverFiles = @(Get-ChildItem -Path $modulesFullPath -File -Recurse -ErrorAction SilentlyContinue)
+            if ($leftoverFiles.Count -gt 0) {
+                foreach ($f in $leftoverFiles) {
+                    $rel = $f.FullName.Substring($modulesFullPath.Length).TrimStart('\', '/')
+                    $destFile = Join-Path $parentDir $rel
+                    if (Test-Path $destFile -PathType Leaf) {
+                        Remove-Item -Path $f.FullName -Force -ErrorAction SilentlyContinue
+                    } else {
+                        $destSubDir = Split-Path -Parent $destFile
+                        if (-not (Test-Path $destSubDir)) {
+                            New-Item -ItemType Directory -Path $destSubDir -Force | Out-Null
+                        }
+                        Move-Item -Path $f.FullName -Destination $destFile -Force -ErrorAction SilentlyContinue
+                    }
+                }
+                Remove-Item -Path $modulesFullPath -Recurse -Force -ErrorAction SilentlyContinue
+                Write-Host "[Post-Process] Cleaned up duplicate modules folder (moved to parent directory)" -ForegroundColor Green
+            }
         }
     }
 }

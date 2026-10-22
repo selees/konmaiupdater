@@ -1,4 +1,4 @@
-# KONMAI Patch Web Server & Auto Updater
+﻿# KONMAI Patch Web Server & Auto Updater
 
 An automated patch server and client updater designed for arcade machines (BEMANI / SOUND VOLTEX, etc.).
 Place your patch archive files (e.g. `KFC-2026080500 to 2026082500.rar`) in the server folder, and the client will automatically detect its current version from `bootstrap.xml`, inspect any existing patches applied on the current game DLL, download sequential updates, extract them directly to the game folder, update `ea3-config.xml`, move `modules`, and re-apply DLL binary patches via [sp2xpatcher](https://github.com/eamuse/sp2xpatcher) integration.
@@ -61,7 +61,7 @@ GameID=KFC
 TargetDir=./KFC
 
 [Modules]
-; Copy files inside modules folder to its parent folder (true / false)
+; Move files inside modules folder to its parent folder (true / false)
 MoveModulesUp=true
 ; Path to modules directory (leave empty to auto-detect inside TargetDir)
 ModulesDir=./KFC/contents/modules
