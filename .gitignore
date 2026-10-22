@@ -1,6 +1,11 @@
 # Temporary folders and files
 _temp/
 *.tmp
+*.bak
+
+# Cached sp2xpatcher definitions
+patches/
+client/patches/
 
 # Patch archives (Do not commit large binary game data)
 *.rar

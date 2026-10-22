@@ -1,7 +1,7 @@
 # KONMAI Patch Web Server & Auto Updater
 
 An automated patch server and client updater designed for arcade machines (BEMANI / SOUND VOLTEX, etc.).
-Place your patch archive files (e.g. `KFC-2026080500 to 2026082500.rar`) in the server folder, and the client will automatically detect its current version from `bootstrap.xml`, download the sequential updates, extract them directly to the game folder, update `ea3-config.xml`, and move `modules` if needed.
+Place your patch archive files (e.g. `KFC-2026080500 to 2026082500.rar`) in the server folder, and the client will automatically detect its current version from `bootstrap.xml`, download sequential updates, extract them directly to the game folder, update `ea3-config.xml`, move `modules`, and apply DLL binary patches via [sp2xpatcher](https://github.com/eamuse/sp2xpatcher) integration.
 
 ---
 
@@ -17,7 +17,7 @@ konmaiupdater/
 │   └── start_server.bat      # Double-click to start server
 │
 └── client/                    # [Client / Arcade Cabinet] Game Updater
-    ├── config.ini            # Server URL, Game dir, Modules options
+    ├── config.ini            # Server URL, Game dir, Modules & sp2xpatcher options
     ├── updater.ps1           # Auto download, unpack, post-process & sequential update engine
     └── updater.bat           # Double-click to update (auto-closes in 5s when finished)
 ```
@@ -65,10 +65,38 @@ TargetDir=./KFC
 MoveModulesUp=true
 ; Path to modules directory (leave empty to auto-detect inside TargetDir)
 ModulesDir=./KFC/contents/modules
+
+[Patches]
+; Enable automatic DLL patching via sp2xpatcher (true / false)
+EnableSp2xPatcher=true
+; List of patches to apply (comma-separated).
+; For memory patches: Patch Name
+; For union patches: Patch Name:Option Name
+; Example:
+; EnabledPatches=Standard/Menu Timer Freeze, Premium Free Timer Freeze, Game FPS Target:120 FPS
+EnabledPatches=Standard/Menu Timer Freeze, Game FPS Target:120 FPS
 ```
 
 > [!NOTE]
 > `bootstrap.xml` (game version detection) and `ea3-config.xml` (datecode update) are automatically discovered inside `TargetDir` (e.g. in `contents/prop/` or `prop/`).
+
+---
+
+## 🎮 sp2xpatcher Integration (Automated DLL Patching)
+
+The client updater includes native integration with [eamuse/sp2xpatcher](https://github.com/eamuse/sp2xpatcher) to automate game DLL hex patching (e.g. `soundvoltex.dll`, `bm2dx.dll`, etc.).
+
+### Key Features:
+1. **Automatic Version Matching**:
+   - Matches the game's `GameID` and release date code from `bootstrap.xml` against `SUPPORTED.md`.
+   - Downloads the corresponding patch definition JSON file and caches it locally under `client/patches/` (supporting offline operation).
+2. **Safe Binary Patching**:
+   - Automatically creates a `.bak` backup file (e.g. `soundvoltex.dll.bak`) before making any first modifications.
+   - Verifies target bytes before writing to prevent file corruption.
+   - Idempotent: checks if a patch is already applied; running the updater again is completely safe and skips already applied patches.
+3. **Patch Discovery**:
+   - Set `EnableSp2xPatcher=true` and leave `EnabledPatches=` empty in `client/config.ini`.
+   - Run `updater.bat` to list all available patches and union options for your exact game version in the console, ready to copy & paste into `EnabledPatches`.
 
 ---
 
@@ -80,7 +108,7 @@ ModulesDir=./KFC/contents/modules
    - Run `start_server.bat`.
 
 2. **Run Client Updater (`client/updater.bat`)**
-   - Configure `client/config.ini` with the server URL.
+   - Configure `client/config.ini` with the server URL and desired options.
    - Run `updater.bat`.
    - `updater.bat` automatically checks and updates `updater.ps1` from the server before launching (skips silently if server is offline).
-   - The updater will download sequentially, unpack cleanly into the game folder, update `ea3-config.xml`, handle `modules`, and close after 5 seconds.
+   - The updater will download sequentially, unpack cleanly into the game folder, update `ea3-config.xml`, handle `modules`, apply `sp2xpatcher` DLL patches, and close after 5 seconds.

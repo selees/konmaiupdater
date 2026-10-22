@@ -1,4 +1,4 @@
-# ScriptVersion: 1.0.0
+# ScriptVersion: 1.1.0
 param (
     [string]$ConfigFile = "$PSScriptRoot\config.ini"
 )
@@ -18,6 +18,8 @@ $gameId = ""
 $targetDir = "$PSScriptRoot"
 $moveModulesUp = $false
 $modulesDir = ""
+$enableSp2xPatcher = $false
+$enabledPatchesRaw = ""
 
 # Local temporary directory inside the updater folder
 $localTempDir = Join-Path $PSScriptRoot "_temp"
@@ -54,6 +56,12 @@ if (Test-Path $ConfigFile) {
         elseif ($line -match "^ModulesDir\s*=\s*(.+)$") {
             $modulesDir = $matches[1].Trim()
         }
+        elseif ($line -match "^EnableSp2xPatcher\s*=\s*(.+)$") {
+            $enableSp2xPatcher = ($matches[1].Trim().ToLower() -eq "true")
+        }
+        elseif ($line -match "^EnabledPatches\s*=\s*(.*)$") {
+            $enabledPatchesRaw = $matches[1].Trim()
+        }
     }
 } else {
     @"
@@ -73,6 +81,16 @@ TargetDir=./KFC
 MoveModulesUp=true
 ; Path to modules directory (leave empty to auto-detect inside TargetDir)
 ModulesDir=./KFC/contents/modules
+
+[Patches]
+; Enable automatic DLL patching via sp2xpatcher (true / false)
+EnableSp2xPatcher=false
+; List of patches to apply (comma-separated).
+; For memory patches: Patch Name
+; For union patches: Patch Name:Option Name
+; Example:
+; EnabledPatches=Standard/Menu Timer Freeze, Premium Free Timer Freeze, Game FPS Target:120 FPS
+EnabledPatches=
 "@ | Set-Content -Path $ConfigFile -Encoding UTF8
     Write-Host "[Notice] Created default config.ini" -ForegroundColor Gray
 }
@@ -80,6 +98,9 @@ ModulesDir=./KFC/contents/modules
 Write-Host "Server URL : $serverUrl" -ForegroundColor White
 Write-Host "Game ID    : $(if ($gameId) { $gameId } else { 'ALL' })" -ForegroundColor White
 Write-Host "Target Dir : $targetDir" -ForegroundColor White
+if ($enableSp2xPatcher) {
+    Write-Host "sp2xpatcher: Enabled" -ForegroundColor Green
+}
 
 # 2. Query available patches from server
 Write-Host "`nChecking for available patches..." -ForegroundColor Yellow
@@ -98,6 +119,7 @@ try {
     Write-Host "[ERROR] Could not connect to update server ($serverUrl)." -ForegroundColor Red
     Write-Host "Please ensure the server is running and the IP address in config.ini is correct." -ForegroundColor Red
     Write-Host "Details: $($_.Exception.Message)" -ForegroundColor DarkGray
+    Start-Sleep -Seconds 3
     exit 1
 }
 
@@ -177,7 +199,7 @@ if (-not [string]::IsNullOrWhiteSpace($currentVersion)) {
 }
 Write-Host "----------------------------------------------------------" -ForegroundColor DarkGray
 
-# Helper function: Unpack archive with auto wrapper-folder stripping using local temp
+# Helper functions
 function Unpack-Archive ($archivePath, $destPath, $workTempDir) {
     $tempExtract = Join-Path $workTempDir ("unpack_" + [System.Guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Path $tempExtract -Force | Out-Null
@@ -250,6 +272,344 @@ function Unpack-Archive ($archivePath, $destPath, $workTempDir) {
     Remove-Item -Recurse -Force $tempExtract -ErrorAction SilentlyContinue
 
     return ($roboExit -lt 8)
+}
+
+function Convert-HexStringToBytes([string]$hex) {
+    $hex = $hex.Trim() -replace '\s+', ''
+    if ($hex.Length % 2 -ne 0) { throw "Hex string length must be even: $hex" }
+    $bytes = New-Object byte[] ($hex.Length / 2)
+    for ($i = 0; $i -lt $hex.Length; $i += 2) {
+        $bytes[$i / 2] = [Convert]::ToByte($hex.Substring($i, 2), 16)
+    }
+    return $bytes
+}
+
+function Convert-BytesToHexString([byte[]]$bytes) {
+    return ($bytes | ForEach-Object { $_.ToString("X2") }) -join ""
+}
+
+function Compare-ByteArrays ([byte[]]$a, [byte[]]$b) {
+    if ($null -eq $a -or $null -eq $b) { return $false }
+    if ($a.Length -ne $b.Length) { return $false }
+    for ($i = 0; $i -lt $a.Length; $i++) {
+        if ($a[$i] -ne $b[$i]) { return $false }
+    }
+    return $true
+}
+
+function Backup-Dll ($dllPath) {
+    $bakPath = "$dllPath.bak"
+    if (-not (Test-Path $bakPath)) {
+        Copy-Item -Path $dllPath -Destination $bakPath -Force
+        Write-Host "  [Backup] Created backup: $(Split-Path $bakPath -Leaf)" -ForegroundColor DarkGray
+    }
+}
+
+function Find-TargetDll ($baseDir, $dllName) {
+    if (-not (Test-Path $baseDir)) { return $null }
+    $candidates = @(
+        (Join-Path $baseDir $dllName),
+        (Join-Path $baseDir "contents\$dllName"),
+        (Join-Path $baseDir "contents\modules\$dllName"),
+        (Join-Path $baseDir "modules\$dllName")
+    )
+    foreach ($c in $candidates) {
+        if (Test-Path $c -PathType Leaf) { return $c }
+    }
+    $found = Get-ChildItem -Path $baseDir -Filter $dllName -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($found) { return $found.FullName }
+    return $null
+}
+
+function Invoke-Sp2xPatcher ($targetDir, $gameCode, $currentVersion, $enabledPatchesRaw, $resolvedBootstrap) {
+    Write-Host "`n----------------------------------------------------------" -ForegroundColor DarkGray
+    Write-Host "[sp2xpatcher] Checking for game patches..." -ForegroundColor Yellow
+
+    # 1. Determine target game code
+    $detectedGameCode = if ($gameCode) { $gameCode.Split('-')[0].Trim().ToUpper() } else { "" }
+    if (-not $detectedGameCode -and $currentVersion -match "^([A-Za-z0-9_]+)-") {
+        $detectedGameCode = $matches[1].ToUpper()
+    }
+    if (-not $detectedGameCode) {
+        Write-Host "[sp2xpatcher] Could not determine Game ID. Please specify GameID in config.ini." -ForegroundColor Yellow
+        return
+    }
+
+    # 2. Determine target release date (YYYY-MM-DD)
+    $versionDate = ""
+    if ($resolvedBootstrap -and (Test-Path $resolvedBootstrap -PathType Leaf)) {
+        $bContent = Get-Content $resolvedBootstrap -Raw -Encoding UTF8
+        if ($bContent -match '(?s)<release_code\b[^>]*>\s*([A-Za-z0-9_-]+)\s*</release_code>') {
+            $rc = $matches[1].Trim()
+            if ($rc -match "^(\d{4})(\d{2})(\d{2})") {
+                $versionDate = "$($matches[1])-$($matches[2])-$($matches[3])"
+            }
+        }
+    }
+    if (-not $versionDate -and $currentVersion) {
+        if ($currentVersion -match "(\d{4}-\d{2}-\d{2})") {
+            $versionDate = $matches[1]
+        } elseif ($currentVersion -match "(\d{4})(\d{2})(\d{2})") {
+            $versionDate = "$($matches[1])-$($matches[2])-$($matches[3])"
+        }
+    }
+
+    if (-not $versionDate) {
+        Write-Host "[sp2xpatcher] Could not detect game release date from bootstrap.xml or version string." -ForegroundColor Yellow
+        return
+    }
+
+    Write-Host "[sp2xpatcher] Target Game: $detectedGameCode | Date: $versionDate" -ForegroundColor Cyan
+
+    # 3. Cache directory for patches
+    $scriptRoot = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
+    $patchCacheDir = Join-Path $scriptRoot "patches"
+    if (-not (Test-Path $patchCacheDir)) {
+        New-Item -ItemType Directory -Path $patchCacheDir -Force | Out-Null
+    }
+
+    # 4. Fetch / load SUPPORTED.md
+    $supportedMdFile = Join-Path $patchCacheDir "SUPPORTED.md"
+    $supportedUrl = "https://raw.githubusercontent.com/eamuse/sp2xpatcher/main/SUPPORTED.md"
+    
+    try {
+        $null = & curl.exe -fsSL --connect-timeout 5 --max-time 15 -o "$supportedMdFile.tmp" "$supportedUrl" 2>&1
+        if ($LASTEXITCODE -eq 0 -and (Test-Path "$supportedMdFile.tmp")) {
+            Move-Item -Path "$supportedMdFile.tmp" -Destination "$supportedMdFile" -Force
+        } else {
+            if (Test-Path "$supportedMdFile.tmp") { Remove-Item "$supportedMdFile.tmp" -Force }
+        }
+    } catch {}
+
+    $supportedContent = ""
+    if (Test-Path $supportedMdFile) {
+        $supportedContent = Get-Content $supportedMdFile -Raw -Encoding UTF8
+    } else {
+        Write-Host "[sp2xpatcher] Failed to retrieve SUPPORTED.md from GitHub and no local cache was found." -ForegroundColor Red
+        return
+    }
+
+    # 5. Parse SUPPORTED.md and find matching rows
+    $matchedRows = @()
+    $lines = $supportedContent -split "`r?`n" | Where-Object { $_ -match "^\|" }
+    foreach ($line in $lines) {
+        $cols = $line.Split('|') | ForEach-Object { $_.Trim() }
+        if ($cols.Count -ge 5 -and $cols[1] -ne "Codename" -and $cols[1] -ne "Game Series" -and $cols[1] -notmatch "^-+$") {
+            $rowCode = $cols[1].ToUpper()
+            $rowFile = $cols[2]
+            $rowVer = $cols[3]
+            $rowIdRaw = $cols[4]
+
+            $isGameMatch = ($rowCode -eq $detectedGameCode) -or 
+                           ($rowCode.StartsWith("$detectedGameCode-")) -or 
+                           ($detectedGameCode.StartsWith("$rowCode-"))
+
+            $isVerMatch = ($rowVer -match [regex]::Escape($versionDate))
+
+            if ($isGameMatch -and $isVerMatch) {
+                $identifier = ""
+                if ($rowIdRaw -match '\[([^\]]+)\]\((?:patches/)?([^\)]+)\)') {
+                    $identifier = $matches[2] -replace '\.json$', ''
+                } elseif ($rowIdRaw -match '([A-Za-z0-9_-]+)') {
+                    $identifier = $matches[1] -replace '\.json$', ''
+                }
+
+                if ($identifier) {
+                    $matchedRows += [PSCustomObject]@{
+                        Codename   = $rowCode
+                        Filename   = $rowFile
+                        Version    = $rowVer
+                        Identifier = $identifier
+                    }
+                }
+            }
+        }
+    }
+
+    if ($matchedRows.Count -eq 0) {
+        Write-Host "[sp2xpatcher] No patch definitions found for $detectedGameCode ($versionDate) in SUPPORTED.md." -ForegroundColor Yellow
+        return
+    }
+
+    # 6. Parse user-specified patches from config.ini
+    $configuredPatches = @()
+    if (-not [string]::IsNullOrWhiteSpace($enabledPatchesRaw)) {
+        $configuredPatches = @($enabledPatchesRaw.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
+    }
+
+    $foundInAnyJson = @{}
+
+    # 7. Process each matched definition
+    foreach ($row in $matchedRows) {
+        Write-Host "`n[sp2xpatcher] Matched: $($row.Filename) (Identifier: $($row.Identifier))" -ForegroundColor Cyan
+        
+        $targetDll = Find-TargetDll -baseDir $targetDir -dllName $row.Filename
+        if (-not $targetDll) {
+            Write-Host "  -> '$($row.Filename)' was not found in '$targetDir'. Skipping." -ForegroundColor DarkGray
+            continue
+        }
+
+        $jsonFile = Join-Path $patchCacheDir "$($row.Identifier).json"
+        $jsonUrl = "https://raw.githubusercontent.com/eamuse/sp2xpatcher/main/patches/$($row.Identifier).json"
+
+        try {
+            $null = & curl.exe -fsSL --connect-timeout 5 --max-time 15 -o "$jsonFile.tmp" "$jsonUrl" 2>&1
+            if ($LASTEXITCODE -eq 0 -and (Test-Path "$jsonFile.tmp")) {
+                Move-Item -Path "$jsonFile.tmp" -Destination "$jsonFile" -Force
+            } else {
+                if (Test-Path "$jsonFile.tmp") { Remove-Item "$jsonFile.tmp" -Force }
+            }
+        } catch {}
+
+        if (-not (Test-Path $jsonFile)) {
+            Write-Host "  -> Failed to load patch definition file: $($row.Identifier).json" -ForegroundColor Red
+            continue
+        }
+
+        $patchData = $null
+        try {
+            $jsonRaw = Get-Content $jsonFile -Raw -Encoding UTF8
+            $patchData = $jsonRaw | ConvertFrom-Json
+        } catch {
+            Write-Host "  -> Failed to parse $($row.Identifier).json: $($_.Exception.Message)" -ForegroundColor Red
+            continue
+        }
+
+        if ($configuredPatches.Count -eq 0) {
+            Write-Host "  Available patches for $($row.Filename):" -ForegroundColor Green
+            foreach ($item in $patchData) {
+                if ($item.type -eq "memory") {
+                    Write-Host "    - $($item.name)" -ForegroundColor White
+                } elseif ($item.type -eq "union") {
+                    $opts = ($item.patches | ForEach-Object { $_.name }) -join " | "
+                    Write-Host "    - $($item.name): <$opts>" -ForegroundColor White
+                }
+            }
+            continue
+        }
+
+        foreach ($patchStr in $configuredPatches) {
+            $pName = $patchStr
+            $optName = ""
+            if ($patchStr.Contains(":")) {
+                $colonIdx = $patchStr.IndexOf(":")
+                $pName = $patchStr.Substring(0, $colonIdx).Trim()
+                $optName = $patchStr.Substring($colonIdx + 1).Trim()
+            }
+
+            $matchedDef = $patchData | Where-Object { $_.name -and ($_.name.Trim().ToLower() -eq $pName.ToLower()) } | Select-Object -First 1
+            if (-not $matchedDef) {
+                continue
+            }
+
+            $foundInAnyJson[$pName.ToLower()] = $true
+
+            if ($matchedDef.type -eq "memory") {
+                foreach ($sub in @($matchedDef.patches)) {
+                    $offset = [long]$sub.offset
+                    $dllName = if ($sub.dllName) { $sub.dllName } else { $row.Filename }
+                    $dllPath = Find-TargetDll -baseDir $targetDir -dllName $dllName
+                    if (-not $dllPath) {
+                        Write-Host "  [WARN] '$dllName' not found for patch '$pName'." -ForegroundColor Yellow
+                        continue
+                    }
+
+                    $disabledBytes = Convert-HexStringToBytes $sub.dataDisabled
+                    $enabledBytes = Convert-HexStringToBytes $sub.dataEnabled
+                    $patchLen = $enabledBytes.Length
+
+                    $fs = [System.IO.File]::Open($dllPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::Read)
+                    try {
+                        if ($fs.Length -lt ($offset + $patchLen)) {
+                            Write-Host "  [WARN] '$pName': File size is smaller than offset 0x$($offset.ToString('X'))." -ForegroundColor Red
+                            continue
+                        }
+                        $fs.Seek($offset, [System.IO.SeekOrigin]::Begin) | Out-Null
+                        $curBytes = New-Object byte[] $patchLen
+                        $null = $fs.Read($curBytes, 0, $patchLen)
+
+                        if (Compare-ByteArrays $curBytes $enabledBytes) {
+                            Write-Host "  [OK] '$($matchedDef.name)': Already applied." -ForegroundColor DarkGreen
+                        } elseif (Compare-ByteArrays $curBytes $disabledBytes) {
+                            Backup-Dll -dllPath $dllPath
+                            $fs.Seek($offset, [System.IO.SeekOrigin]::Begin) | Out-Null
+                            $fs.Write($enabledBytes, 0, $patchLen)
+                            Write-Host "  [OK] Applied '$($matchedDef.name)' (Offset: 0x$($offset.ToString('X')))" -ForegroundColor Green
+                        } else {
+                            $curHex = Convert-BytesToHexString $curBytes
+                            Write-Host "  [WARN] '$($matchedDef.name)': Byte mismatch at 0x$($offset.ToString('X')). Found: $curHex, Expected: $($sub.dataDisabled). Skipped." -ForegroundColor Yellow
+                        }
+                    } finally {
+                        $fs.Close()
+                    }
+                }
+            }
+            elseif ($matchedDef.type -eq "union") {
+                if (-not $optName) {
+                    $availOpts = ($matchedDef.patches | ForEach-Object { $_.name }) -join ", "
+                    Write-Host "  [WARN] '$($matchedDef.name)' is a union patch. Please specify an option in config.ini (e.g. '$($matchedDef.name):Option'). Available: $availOpts" -ForegroundColor Yellow
+                    continue
+                }
+
+                $matchedOption = $matchedDef.patches | Where-Object {
+                    $_.name.Trim().ToLower() -eq $optName.ToLower() -or
+                    $_.name.Trim().ToLower().StartsWith($optName.ToLower())
+                } | Select-Object -First 1
+
+                if (-not $matchedOption) {
+                    $availOpts = ($matchedDef.patches | ForEach-Object { $_.name }) -join ", "
+                    Write-Host "  [WARN] Option '$optName' not found for '$($matchedDef.name)'. Available: $availOpts" -ForegroundColor Yellow
+                    continue
+                }
+
+                foreach ($sub in @($matchedOption.patch)) {
+                    $offset = [long]$sub.offset
+                    $dllName = if ($sub.dllName) { $sub.dllName } else { $row.Filename }
+                    $dllPath = Find-TargetDll -baseDir $targetDir -dllName $dllName
+                    if (-not $dllPath) {
+                        Write-Host "  [WARN] '$dllName' not found for patch '$pName'." -ForegroundColor Yellow
+                        continue
+                    }
+
+                    $patchBytes = Convert-HexStringToBytes $sub.data
+                    $patchLen = $patchBytes.Length
+
+                    $fs = [System.IO.File]::Open($dllPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::Read)
+                    try {
+                        if ($fs.Length -lt ($offset + $patchLen)) {
+                            Write-Host "  [WARN] '$pName': File size is smaller than offset 0x$($offset.ToString('X'))." -ForegroundColor Red
+                            continue
+                        }
+                        $fs.Seek($offset, [System.IO.SeekOrigin]::Begin) | Out-Null
+                        $curBytes = New-Object byte[] $patchLen
+                        $null = $fs.Read($curBytes, 0, $patchLen)
+
+                        if (Compare-ByteArrays $curBytes $patchBytes) {
+                            Write-Host "  [OK] '$($matchedDef.name)' ($($matchedOption.name)): Already applied." -ForegroundColor DarkGreen
+                        } else {
+                            Backup-Dll -dllPath $dllPath
+                            $fs.Seek($offset, [System.IO.SeekOrigin]::Begin) | Out-Null
+                            $fs.Write($patchBytes, 0, $patchLen)
+                            Write-Host "  [OK] Applied '$($matchedDef.name)' -> '$($matchedOption.name)' (Offset: 0x$($offset.ToString('X')))" -ForegroundColor Green
+                        }
+                    } finally {
+                        $fs.Close()
+                    }
+                }
+            }
+        }
+    }
+
+    if ($configuredPatches.Count -eq 0) {
+        Write-Host "`nTo enable any of the above patches, add them to 'EnabledPatches' in config.ini." -ForegroundColor Gray
+    } else {
+        foreach ($patchStr in $configuredPatches) {
+            $checkName = if ($patchStr.Contains(":")) { $patchStr.Substring(0, $patchStr.IndexOf(":")).Trim() } else { $patchStr.Trim() }
+            if (-not $foundInAnyJson.ContainsKey($checkName.ToLower())) {
+                Write-Host "  [Notice] Patch '$checkName' was not found in patch definitions for $detectedGameCode." -ForegroundColor DarkGray
+            }
+        }
+    }
 }
 
 # 4. Plan and validate sequential updates
@@ -407,7 +767,7 @@ if ($updateCount -gt 0) {
 }
 Write-Host "==========================================================" -ForegroundColor Cyan
 
-# 6. Post-processing (Only runs when patches were actually applied)
+# 6. Post-processing
 if ($updateCount -gt 0) {
     $dateCode = ""
     if ($currentVersion -match "-(\d+)$") {
@@ -513,6 +873,11 @@ if ($updateCount -gt 0) {
             Write-Host "[Post-Process] Copied modules to parent directory" -ForegroundColor Green
         }
     }
+}
+
+# 6-3. sp2xpatcher Binary DLL Patching
+if ($enableSp2xPatcher -and $canUpdate) {
+    Invoke-Sp2xPatcher -targetDir $targetDir -gameCode $gameId -currentVersion $currentVersion -enabledPatchesRaw $enabledPatchesRaw -resolvedBootstrap $resolvedBootstrap
 }
 
 # 7. Countdown and auto-exit
