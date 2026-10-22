@@ -1,7 +1,7 @@
 # KONMAI Patch Web Server & Auto Updater
 
 An automated patch server and client updater designed for arcade machines (BEMANI / SOUND VOLTEX, etc.).
-Place your patch archive files (e.g. `KFC-2026080500 to 2026082500.rar`) in the server folder, and the client will automatically detect its current version from `bootstrap.xml`, download sequential updates, extract them directly to the game folder, update `ea3-config.xml`, move `modules`, and apply DLL binary patches via [sp2xpatcher](https://github.com/eamuse/sp2xpatcher) integration.
+Place your patch archive files (e.g. `KFC-2026080500 to 2026082500.rar`) in the server folder, and the client will automatically detect its current version from `bootstrap.xml`, inspect any existing patches applied on the current game DLL, download sequential updates, extract them directly to the game folder, update `ea3-config.xml`, move `modules`, and re-apply DLL binary patches via [sp2xpatcher](https://github.com/eamuse/sp2xpatcher) integration.
 
 ---
 
@@ -70,15 +70,17 @@ ModulesDir=./KFC/contents/modules
 ; Enable automatic DLL patching via sp2xpatcher (true / false)
 EnableSp2xPatcher=true
 ; List of patches to apply (comma-separated).
+; Automatically populated from existing patched DLLs before update, or specify manually.
 ; For memory patches: Patch Name
 ; For union patches: Patch Name:Option Name
 ; Example:
 ; EnabledPatches=Standard/Menu Timer Freeze, Premium Free Timer Freeze, Game FPS Target:120 FPS
-EnabledPatches=Standard/Menu Timer Freeze, Game FPS Target:120 FPS
+EnabledPatches=
 ```
 
 > [!NOTE]
-> `bootstrap.xml` (game version detection) and `ea3-config.xml` (datecode update) are automatically discovered inside `TargetDir` (e.g. in `contents/prop/` or `prop/`).
+> - **Non-destructive `config.ini` Migration**: When `updater.ps1` is auto-updated from an older version, it preserves your existing `config.ini` settings and comments, and only appends newly introduced or missing options.
+> - `bootstrap.xml` (game version detection) and `ea3-config.xml` (datecode update) are automatically discovered inside `TargetDir` (e.g. in `contents/prop/` or `prop/`).
 
 ---
 
@@ -87,16 +89,18 @@ EnabledPatches=Standard/Menu Timer Freeze, Game FPS Target:120 FPS
 The client updater includes native integration with [eamuse/sp2xpatcher](https://github.com/eamuse/sp2xpatcher) to automate game DLL hex patching (e.g. `soundvoltex.dll`, `bm2dx.dll`, etc.).
 
 ### Key Features:
-1. **Automatic Version Matching**:
+1. **Automatic Pre-Update Patch Detection & Migration**:
+   - Before applying game updates, the updater inspects your current game version and existing DLL against `sp2xpatcher` definitions to detect which patches (both `memory` and non-default `union` options) are already applied.
+   - Any detected patches are automatically added and saved to `EnabledPatches` in `client/config.ini`, then re-applied to the newly updated DLL at the new version's offsets after the update completes.
+2. **Automatic Version Matching**:
    - Matches the game's `GameID` and release date code from `bootstrap.xml` against `SUPPORTED.md`.
    - Downloads the corresponding patch definition JSON file and caches it locally under `client/patches/` (supporting offline operation).
-2. **Safe Binary Patching**:
-   - Automatically creates a `.bak` backup file (e.g. `soundvoltex.dll.bak`) before making any first modifications.
+3. **Safe Binary Patching**:
+   - Automatically creates/updates a clean `.bak` backup file (e.g. `soundvoltex.dll.bak`) before modifying the DLL.
    - Verifies target bytes before writing to prevent file corruption.
    - Idempotent: checks if a patch is already applied; running the updater again is completely safe and skips already applied patches.
-3. **Patch Discovery**:
-   - Set `EnableSp2xPatcher=true` and leave `EnabledPatches=` empty in `client/config.ini`.
-   - Run `updater.bat` to list all available patches and union options for your exact game version in the console, ready to copy & paste into `EnabledPatches`.
+4. **Patch Discovery**:
+   - If the DLL has no patches applied yet and `EnabledPatches=` is empty in `client/config.ini`, running `updater.bat` lists all available patches and union options for your exact game version in the console.
 
 ---
 
@@ -111,4 +115,4 @@ The client updater includes native integration with [eamuse/sp2xpatcher](https:/
    - Configure `client/config.ini` with the server URL and desired options.
    - Run `updater.bat`.
    - `updater.bat` automatically checks and updates `updater.ps1` from the server before launching (skips silently if server is offline).
-   - The updater will download sequentially, unpack cleanly into the game folder, update `ea3-config.xml`, handle `modules`, apply `sp2xpatcher` DLL patches, and close after 5 seconds.
+   - The updater will detect any existing DLL patches, download sequential updates, unpack cleanly into the game folder, update `ea3-config.xml`, handle `modules`, re-apply `sp2xpatcher` DLL patches, and close after 5 seconds.
