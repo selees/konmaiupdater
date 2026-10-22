@@ -1,4 +1,4 @@
-# ScriptVersion: 1.2.0
+﻿# ScriptVersion: 1.2.1
 param (
     [string]$ConfigFile = "$PSScriptRoot\config.ini"
 )
@@ -372,26 +372,40 @@ function Unpack-Archive ($archivePath, $destPath, $workTempDir) {
         return $false
     }
 
-    # Strip wrapping folder if named after the archive or single wrapper
+    # Strip wrapping folder(s) if named after the archive or single wrapper
     $archiveBaseName = [System.IO.Path]::GetFileNameWithoutExtension($archivePath)
     $sourceToMove = $tempExtract
+    $keepDirs = @("contents", "sound", "prop", "modules", "data", "package", "model", "graphics", "db")
 
-    $sameNameDir = Join-Path $tempExtract $archiveBaseName
-    if (Test-Path $sameNameDir -PathType Container) {
-        $sourceToMove = $sameNameDir
-    } else {
-        $topItems = Get-ChildItem -Path $tempExtract
+    while ($true) {
+        $topItems = @(Get-ChildItem -Path $sourceToMove)
         if ($topItems.Count -eq 1 -and $topItems[0].PSIsContainer) {
             $folderName = $topItems[0].Name
-            $keepDirs = @("contents", "sound", "prop", "modules", "data", "package", "model", "graphics", "db")
-            if ($folderName -match "\s+to\s+" -or $folderName -match "^[A-Za-z0-9_]+-\d+" -or ($keepDirs -notcontains $folderName.ToLower())) {
+            if ($folderName -eq $archiveBaseName -or $folderName -match "\s+to\s+" -or $folderName -match "^[A-Za-z0-9_]+-\d+" -or ($keepDirs -notcontains $folderName.ToLower())) {
                 $sourceToMove = $topItems[0].FullName
+                continue
             }
+        }
+        break
+    }
+
+    # If 'contents' folder is missing and inner game folders (data, modules, prop, etc.) are directly exposed, extract into 'contents\'
+    $finalDestPath = $destPath
+    $hasContentsDir = Test-Path (Join-Path $sourceToMove "contents") -PathType Container
+    if (-not $hasContentsDir) {
+        $innerGameDirs = @("data", "modules", "prop", "sound", "package", "model", "graphics", "db")
+        $exposedInnerDirs = @(Get-ChildItem -Path $sourceToMove -Directory -ErrorAction SilentlyContinue | Where-Object { $innerGameDirs -contains $_.Name.ToLower() })
+        if ($exposedInnerDirs.Count -gt 0 -and (Split-Path -Leaf $destPath).ToLower() -ne "contents") {
+            $finalDestPath = Join-Path $destPath "contents"
+            if (-not (Test-Path $finalDestPath)) {
+                New-Item -ItemType Directory -Path $finalDestPath -Force | Out-Null
+            }
+            Write-Host "  [Notice] Archive has no 'contents' folder (exposed: $($exposedInnerDirs.Name -join ', ')). Extracting into 'contents\'..." -ForegroundColor Cyan
         }
     }
 
     # Overwrite-merge to destination directory
-    robocopy "$sourceToMove" "$destPath" /E /MOVE /NFL /NDL /NJH /NJS | Out-Null
+    robocopy "$sourceToMove" "$finalDestPath" /E /MOVE /NFL /NDL /NJH /NJS | Out-Null
     $roboExit = $LASTEXITCODE
 
     Remove-Item -Recurse -Force $tempExtract -ErrorAction SilentlyContinue
