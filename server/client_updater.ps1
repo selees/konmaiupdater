@@ -1254,26 +1254,6 @@ if ($moveModulesUp) {
         if ($updateCount -gt 0) {
             robocopy "$modulesFullPath" "$parentDir" /E /MOVE /NFL /NDL /NJH /NJS | Out-Null
             Write-Host "[Post-Process] Moved modules to parent directory" -ForegroundColor Green
-        } else {
-            # If no update ran but leftover duplicate files exist in modules from previous copy mode, clean/move them
-            $leftoverFiles = @(Get-ChildItem -Path $modulesFullPath -File -Recurse -ErrorAction SilentlyContinue)
-            if ($leftoverFiles.Count -gt 0) {
-                foreach ($f in $leftoverFiles) {
-                    $rel = $f.FullName.Substring($modulesFullPath.Length).TrimStart('\', '/')
-                    $destFile = Join-Path $parentDir $rel
-                    if (Test-Path $destFile -PathType Leaf) {
-                        Remove-Item -Path $f.FullName -Force -ErrorAction SilentlyContinue
-                    } else {
-                        $destSubDir = Split-Path -Parent $destFile
-                        if (-not (Test-Path $destSubDir)) {
-                            New-Item -ItemType Directory -Path $destSubDir -Force | Out-Null
-                        }
-                        Move-Item -Path $f.FullName -Destination $destFile -Force -ErrorAction SilentlyContinue
-                    }
-                }
-                Remove-Item -Path $modulesFullPath -Recurse -Force -ErrorAction SilentlyContinue
-                Write-Host "[Post-Process] Cleaned up duplicate modules folder (moved to parent directory)" -ForegroundColor Green
-            }
         }
     }
 }
