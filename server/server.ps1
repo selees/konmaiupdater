@@ -50,7 +50,7 @@ Port=8080
 AllowedClientIP=*
 
 [Storage]
-; Directory containing .rar patch files (relative or absolute)
+; Directory containing .rar or .zip patch files (relative or absolute)
 UpdatesDir=./updates
 "@ | Set-Content -Path $ConfigFile -Encoding UTF8
 }
@@ -149,7 +149,10 @@ try {
 
                     # 1. File list request (/list or /)
                     if ($cleanPath -eq "list" -or $cleanPath -eq "") {
-                        $files = Get-ChildItem -Path $updatesDir -File -Filter "*.rar" | Select-Object -ExpandProperty Name
+                        $files = @(Get-ChildItem -Path $updatesDir -File |
+                            Where-Object { $_.Extension -match '^\.(rar|zip)$' } |
+                            Sort-Object Name |
+                            Select-Object -ExpandProperty Name)
                         $responseBody = ($files -join "`n")
                         $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($responseBody)
                         

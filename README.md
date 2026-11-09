@@ -1,7 +1,7 @@
 ﻿# KONMAI Patch Web Server & Auto Updater
 
 An automated patch server and client updater designed for arcade machines (BEMANI / SOUND VOLTEX, etc.).
-Place your patch archive files (e.g. `KFC-2026080500 to 2026082500.rar`) in the server folder, and the client will automatically detect its current version from `bootstrap.xml`, inspect any existing patches applied on the current game DLL, download sequential updates, extract them directly to the game folder, update `ea3-config.xml`, move `modules`, and re-apply DLL binary patches via [sp2xpatcher](https://github.com/eamuse/sp2xpatcher) integration.
+Place your patch archive files (e.g. `KFC-2026080500 to 2026082500.rar` or the same name with `.zip`) in the server folder, and the client will automatically detect its current version from `bootstrap.xml`, inspect any existing patches applied on the current game DLL, download sequential updates, extract them directly to the game folder, update `ea3-config.xml`, move `modules`, and re-apply DLL binary patches via [sp2xpatcher](https://github.com/eamuse/sp2xpatcher) integration.
 
 ---
 
@@ -12,7 +12,7 @@ konmaiupdater/
 ├── server/                    # [Server PC] Patch Distribution
 │   ├── client_updater.ps1    # Client updater script distributed to cabinets
 │   ├── config.ini            # Server settings (Bind IP, Port, Client IP filter, Updates folder)
-│   ├── updates/              # Drop your .rar patch files here
+│   ├── updates/              # Drop your .rar or .zip patch files here
 │   ├── server.ps1            # Lightweight native HTTP server
 │   └── start_server.bat      # Double-click to start server
 │
@@ -43,7 +43,7 @@ Port=8080
 AllowedClientIP=*
 
 [Storage]
-; Directory containing .rar patch files (relative or absolute)
+; Directory containing .rar or .zip patch files (relative or absolute)
 UpdatesDir=./updates
 ```
 
