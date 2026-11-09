@@ -1,4 +1,4 @@
-﻿# ScriptVersion: 1.2.2
+﻿# ScriptVersion: 1.2.3
 param (
     [string]$ConfigFile = "$PSScriptRoot\config.ini"
 )
@@ -215,6 +215,9 @@ if (Test-Path $ConfigFile) {
 Write-Host "Server URL : $serverUrl" -ForegroundColor White
 Write-Host "Game ID    : $(if ($gameId) { $gameId } else { 'ALL' })" -ForegroundColor White
 Write-Host "Target Dir : $targetDir" -ForegroundColor White
+
+# Accepted patch names: "GAME-FROM to TO.rar" and the same name with .zip
+$patchArchivePattern = '\.(?:rar|zip)$'
 if ($enableSp2xPatcher) {
     Write-Host "sp2xpatcher: Enabled" -ForegroundColor Green
 }
@@ -251,7 +254,7 @@ if ($serverReachable) {
     }
 
     if ($patchList.Count -eq 0) {
-        Write-Host "`n[Notice] No matching patch (.rar) files found on server." -ForegroundColor Yellow
+        Write-Host "`n[Notice] No matching patch (.rar or .zip) files found on server." -ForegroundColor Yellow
     }
 }
 
@@ -290,7 +293,7 @@ if ($resolvedBootstrap -and (Test-Path $resolvedBootstrap -PathType Leaf)) {
 # Fallback to server lowest patch if bootstrap.xml is missing or empty
 if ([string]::IsNullOrWhiteSpace($currentVersion) -and $patchList.Count -gt 0) {
     $validPatches = foreach ($f in $patchList) {
-        if ($f -match "^([A-Za-z0-9_]+)-(\d+)\s+to\s+(\d+)\.rar$") {
+        if ($f -match "^([A-Za-z0-9_]+)-(\d+)\s+to\s+(\d+)$patchArchivePattern") {
             [PSCustomObject]@{
                 FileName = $f
                 GameCode = $matches[1]
@@ -1004,7 +1007,7 @@ if (-not [string]::IsNullOrWhiteSpace($currentVersion) -and $patchList.Count -gt
     # Parse available patches to find the highest server version
     $availablePatches = @()
     foreach ($f in $patchList) {
-        if ($f -match "^([A-Za-z0-9_]+)-(\d+)\s+to\s+([A-Za-z0-9_-]+)\.rar$") {
+        if ($f -match "^([A-Za-z0-9_]+)-(\d+)\s+to\s+([A-Za-z0-9_-]+)$patchArchivePattern") {
             $pGame = $matches[1]
             $pFromNum = [long]$matches[2]
             $pToRaw = $matches[3]
@@ -1035,10 +1038,10 @@ if (-not [string]::IsNullOrWhiteSpace($currentVersion) -and $patchList.Count -gt
     $tempVer = $currentVersion
     while ($true) {
         $escapedVer = [regex]::Escape($tempVer)
-        $matchedFile = $patchList | Where-Object { $_ -match "^$escapedVer\s+to\s+([A-Za-z0-9_-]+)\.rar$" } | Select-Object -First 1
+        $matchedFile = @($patchList | Where-Object { $_ -match "^$escapedVer\s+to\s+([A-Za-z0-9_-]+)$patchArchivePattern" } | Sort-Object) | Select-Object -First 1
         if (-not $matchedFile) { break }
 
-        if ($matchedFile -match "^$escapedVer\s+to\s+([A-Za-z0-9_-]+)\.rar$") {
+        if ($matchedFile -match "^$escapedVer\s+to\s+([A-Za-z0-9_-]+)$patchArchivePattern") {
             $nextVerSuffix = $matches[1]
             $newFullVersion = if ($nextVerSuffix -match "^[A-Za-z0-9_]+-") { $nextVerSuffix }
                               elseif ($gameCode) { "$gameCode-$nextVerSuffix" }
@@ -1067,7 +1070,7 @@ if (-not [string]::IsNullOrWhiteSpace($currentVersion) -and $patchList.Count -gt
             Write-Host "`n[WARNING] Update cannot proceed: Missing required patch file!" -ForegroundColor Red
             Write-Host "  Current game version : $currentVersion" -ForegroundColor Yellow
             Write-Host "  Latest server version: $maxServerVerNum" -ForegroundColor Yellow
-            Write-Host "  Missing patch file   : $currentVersion to <next_version>.rar" -ForegroundColor Red
+            Write-Host "  Missing patch file   : $currentVersion to <next_version>.rar or .zip" -ForegroundColor Red
             Write-Host "The patch file to update from current version to next version is missing on server." -ForegroundColor Red
             Write-Host "Update aborted.`n" -ForegroundColor Red
         }
@@ -1077,7 +1080,7 @@ if (-not [string]::IsNullOrWhiteSpace($currentVersion) -and $patchList.Count -gt
             Write-Host "  Current game version : $currentVersion" -ForegroundColor Yellow
             Write-Host "  Chain stopped at     : $tempVer" -ForegroundColor Yellow
             Write-Host "  Latest server version: $maxServerVerNum" -ForegroundColor Yellow
-            Write-Host "  Missing patch file   : $tempVer to <next_version>.rar" -ForegroundColor Red
+            Write-Host "  Missing patch file   : $tempVer to <next_version>.rar or .zip" -ForegroundColor Red
             Write-Host "An intermediate patch file in the update chain is missing on server." -ForegroundColor Red
             Write-Host "Update aborted to prevent partial update.`n" -ForegroundColor Red
         }
@@ -1100,7 +1103,9 @@ if ($canUpdate -and $plannedPatches.Count -gt 0) {
             Write-Host "[Step $updateCount / $($plannedPatches.Count)] Updating: $($p.FromVersion) -> $($p.ToVersion)" -ForegroundColor Yellow
             Write-Host "Patch file : $($p.FileName)" -ForegroundColor White
 
-            $tempFile = Join-Path $localTempDir "patch_$updateCount.rar"
+            $patchExt = [System.IO.Path]::GetExtension($p.FileName)
+            if ([string]::IsNullOrWhiteSpace($patchExt)) { $patchExt = ".zip" }
+            $tempFile = Join-Path $localTempDir ("patch_{0}{1}" -f $updateCount, $patchExt)
             if (Test-Path $tempFile) { Remove-Item $tempFile -Force }
 
             $encodedFileName = [System.Uri]::EscapeDataString($p.FileName)
