@@ -1,4 +1,4 @@
-﻿# ScriptVersion: 1.2.3
+﻿# ScriptVersion: 1.2.4
 param (
     [string]$ConfigFile = "$PSScriptRoot\config.ini"
 )
@@ -243,17 +243,29 @@ try {
     Write-Host "Details: $($_.Exception.Message)" -ForegroundColor DarkGray
 }
 
+$overlayCandidates = @()
 if ($serverReachable) {
+    # GAMECODE_Update.zip is a file overlay applied after the version chain, not a version patch.
+    $overlayCandidates = @($patchList | Where-Object { $_ -match '^(?i)[A-Za-z0-9_]+_Update\.zip$' })
+    $patchList = @($patchList | Where-Object { $_ -notmatch '^(?i)[A-Za-z0-9_]+_Update\.zip$' })
+
     # Filter by GameID if specified
     if (-not [string]::IsNullOrWhiteSpace($gameId)) {
         $escapedGameId = [regex]::Escape($gameId)
         $patchList = @($patchList | Where-Object { $_ -match "^$escapedGameId-" })
+        $overlayCandidates = @($overlayCandidates | Where-Object { $_ -match "^(?i)${escapedGameId}_Update\.zip$" })
         Write-Host "Filtered $($patchList.Count) patch file(s) matching Game ID [$gameId]." -ForegroundColor Gray
     } else {
         Write-Host "Found $($patchList.Count) patch file(s) on server." -ForegroundColor Gray
     }
 
-    if ($patchList.Count -eq 0) {
+    if ($overlayCandidates.Count -eq 1) {
+        Write-Host "File update  : $($overlayCandidates[0])" -ForegroundColor Gray
+    } elseif ($overlayCandidates.Count -gt 1) {
+        Write-Host "File updates : $($overlayCandidates -join ', ')" -ForegroundColor Gray
+    }
+
+    if ($patchList.Count -eq 0 -and $overlayCandidates.Count -eq 0) {
         Write-Host "`n[Notice] No matching patch (.rar or .zip) files found on server." -ForegroundColor Yellow
     }
 }
@@ -1089,6 +1101,7 @@ if (-not [string]::IsNullOrWhiteSpace($currentVersion) -and $patchList.Count -gt
 
 # 5. Execute sequential update loop
 $updateCount = 0
+$chainBroken = $false
 
 if ($canUpdate -and $plannedPatches.Count -gt 0) {
     Write-Host "`nFound $($plannedPatches.Count) sequential patch(es) to apply:" -ForegroundColor Cyan
@@ -1116,6 +1129,7 @@ if ($canUpdate -and $plannedPatches.Count -gt 0) {
 
             if ($LASTEXITCODE -ne 0 -or -not (Test-Path $tempFile)) {
                 Write-Host "[ERROR] Failed to download patch: $($p.FileName)" -ForegroundColor Red
+                $chainBroken = $true
                 break
             }
 
@@ -1126,6 +1140,7 @@ if ($canUpdate -and $plannedPatches.Count -gt 0) {
 
             if (-not $unpacked) {
                 Write-Host "[ERROR] Failed to extract and apply patch." -ForegroundColor Red
+                $chainBroken = $true
                 break
             }
 
@@ -1266,6 +1281,49 @@ if ($moveModulesUp) {
 # 6-3. sp2xpatcher Binary DLL Patching (Applies detected/configured patches to the current/updated DLL)
 if ($enableSp2xPatcher -and $canUpdate) {
     Invoke-Sp2xPatcher -targetDir $targetDir -gameCode $gameId -currentVersion $currentVersion -enabledPatchesRaw $enabledPatchesRaw -resolvedBootstrap $resolvedBootstrap -forceNewBackup ($updateCount -gt 0)
+}
+
+# 6-4. GAMECODE_Update.zip is a file overlay, applied last and only after a complete version chain.
+# It does not change the detected game version. A missing chain skips it.
+if ($canUpdate -and -not $chainBroken -and $serverReachable -and $overlayCandidates.Count -gt 0) {
+    $overlayCode = if (-not [string]::IsNullOrWhiteSpace($gameId)) { $gameId } else { $gameCode }
+    $overlayFileName = $null
+    if (-not [string]::IsNullOrWhiteSpace($overlayCode)) {
+        $escapedOverlay = [regex]::Escape($overlayCode)
+        $overlayFileName = $overlayCandidates | Where-Object { $_ -match "^(?i)${escapedOverlay}_Update\.zip$" } | Select-Object -First 1
+    }
+
+    if ($overlayFileName) {
+        Write-Host "`n----------------------------------------------------------" -ForegroundColor DarkGray
+        Write-Host "[File Update] Applying $overlayFileName after the version chain" -ForegroundColor Yellow
+
+        if (-not (Test-Path $localTempDir)) {
+            New-Item -ItemType Directory -Path $localTempDir -Force | Out-Null
+        }
+        $overlayTemp = Join-Path $localTempDir "file_update.zip"
+        if (Test-Path $overlayTemp) { Remove-Item $overlayTemp -Force }
+
+        $encodedOverlay = [System.Uri]::EscapeDataString($overlayFileName)
+        Write-Host "Downloading..." -ForegroundColor Gray
+        & curl.exe -fSL --progress-bar -o "$overlayTemp" "$serverUrl/$encodedOverlay"
+
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path $overlayTemp)) {
+            Write-Host "[ERROR] Failed to download file update: $overlayFileName" -ForegroundColor Red
+        } else {
+            Write-Host "Applying file update..." -ForegroundColor Yellow
+            $overlayUnpacked = Unpack-Archive -archivePath $overlayTemp -destPath $targetDir -workTempDir $localTempDir
+            if (Test-Path $overlayTemp) { Remove-Item $overlayTemp -Force }
+            if ($overlayUnpacked) {
+                Write-Host "[OK] Applied file update: $overlayFileName" -ForegroundColor Green
+            } else {
+                Write-Host "[ERROR] Failed to extract file update: $overlayFileName" -ForegroundColor Red
+            }
+        }
+
+        if (Test-Path $localTempDir) {
+            Remove-Item -Recurse -Force $localTempDir -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 # 7. Countdown and auto-exit
