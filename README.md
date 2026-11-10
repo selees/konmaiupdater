@@ -108,6 +108,7 @@ The client updater includes native integration with [eamuse/sp2xpatcher](https:/
 
 1. **Start Server (`server/start_server.bat`)**
    - Place patch archives into `server/updates/`.
+   - Optional file overlay: `GAMECODE_Update.zip` (for example `KFC_Update.zip`) is extracted into the game folder after the version chain, including when the game is already up to date. It does not change the detected version. If a required version patch is missing, the chain stops and this file is not applied.
    - Configure `server/config.ini` if you need custom IP binding, port, or client IP filtering.
    - Run `start_server.bat`.
 
